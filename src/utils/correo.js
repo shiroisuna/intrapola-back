@@ -13,7 +13,11 @@ function obtenerTransporte() {
     port: env.correo.port,
     secure: false,
     requireTLS: true, // EnableSsl = true en el C#
+    name: env.correo.ehlo,
     connectionTimeout: 30000,
+    tls: { servername: env.correo.host },
+    logger: env.correo.debug,
+    debug: env.correo.debug,
   });
   return transporte;
 }

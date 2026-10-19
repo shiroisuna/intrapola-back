@@ -7,7 +7,7 @@ export function notFoundHandler(req, res) {
 }
 
 // eslint-disable-next-line no-unused-vars
-export function errorHandler(err, _req, res, _next) {
+export function errorHandler(err, req, res, _next) {
   if (err instanceof HttpError) {
     return res.status(err.status).json({ error: err.message, detalles: err.details });
   }
@@ -20,7 +20,10 @@ export function errorHandler(err, _req, res, _next) {
   // Errores de SQL Server: clave foránea / única
   if (err?.number === 547) return res.status(400).json({ error: 'Uno de los datos seleccionados no existe' });
   // Texto más largo que la columna de la tabla vieja
-  if (err?.number === 8152 || err?.number === 2628) return res.status(400).json({ error: 'Uno de los textos es demasiado largo. Acórtelo e intente de nuevo.' });
+  if (err?.number === 8152 || err?.number === 2628) {
+    console.warn(`[sql ${err.number}] ${req.method} ${req.originalUrl}: ${err.message}`);
+    return res.status(400).json({ error: 'Uno de los textos es demasiado largo. Acórtelo e intente de nuevo.' });
+  }
   if (err?.number === 2627 || err?.number === 2601) return res.status(409).json({ error: 'El registro ya existe' });
   if (err?.code === 'ESOCKET' || err?.code === 'ELOGIN' || err?.code === 'ETIMEOUT') {
     console.error('[db]', err.message);

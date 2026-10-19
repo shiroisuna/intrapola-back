@@ -9,6 +9,11 @@ import * as anticipos from '../anticipos/anticipos.repository.js';
 import * as soporte from '../soporte/soporte.repository.js';
 import * as usuariosSol from '../usuarios/usuarios.repository.js';
 import { nombreLegacy } from '../empleados/empleados.repository.js';
+import * as relgastos from '../relgastos/relgastos.repository.js';
+import * as salidas from '../salidas/salidas.repository.js';
+import * as materiales from '../materiales/materiales.repository.js';
+import { TIPOS as TIPOS_MAT, ESTADOS as ESTADOS_MAT } from '../materiales/materiales.constantes.js';
+import { aNumero } from '../relgastos/relgastos.service.js';
 
 /*
  * "Mis solicitudes": junta lo que cada tipo tiene guardado en SUS tablas reales.
@@ -141,6 +146,56 @@ const FUENTES = [
         fecha: iso(u.fecha),
         estado: 'REGISTRADA',
         pdfUrl: `/api/solicitudes/usuarios/${u.id}/pdf`,
+      }));
+    },
+  },
+  {
+    nombre: 'relación de gastos',
+    async listar({ cedula, limite }) {
+      const filas = await relgastos.historial(cedula, limite);
+      return filas.map((r) => ({
+        clave: `relgasto-${r.numero}`,
+        numero: Number(r.numero) || null,
+        tipo: 'Relación de gastos',
+        area: 'ADMINISTRACION',
+        descripcion: [r.concepto, `Total ${aNumero(r.totalGasto).toLocaleString('es-VE', { minimumFractionDigits: 2 })}`].filter(Boolean).join(' · '),
+        fecha: r.fecha,
+        estado: 'REGISTRADA',
+        pdfUrl: `/api/formatos/relacion-gastos/${r.numero}/pdf`,
+      }));
+    },
+  },
+  {
+    nombre: 'salida de materiales',
+    necesitaEmpleado: true, // autsalidas guarda "NOMBRE-APELLIDO", no la cédula
+    async listar({ empleado, limite }) {
+      const filas = await salidas.historial(nombreLegacy(empleado), limite);
+      const dmy = (f) => (f ? f.split('-').reverse().join('/') : '');
+      return filas.map((s) => ({
+        clave: `salida-${s.numero}`,
+        numero: Number(s.numero) || null,
+        tipo: 'Salida de materiales',
+        area: 'OPERACIONES',
+        descripcion: [`Retira: ${s.retira}`, `Sale ${dmy(s.fechaSalida)}`, s.fechaRetorno ? `retorna ${dmy(s.fechaRetorno)}` : 'sin retorno'].join(' · '),
+        fecha: s.fecha,
+        estado: 'REGISTRADA',
+        pdfUrl: `/api/formatos/salida-materiales/${s.numero}/pdf`,
+      }));
+    },
+  },
+  {
+    nombre: 'materiales SAP',
+    async listar({ cedula, limite }) {
+      const filas = await materiales.historial(cedula, limite);
+      return filas.map((m) => ({
+        clave: `material-${m.id}`,
+        numero: m.id,
+        tipo: `Material SAP · ${TIPOS_MAT.find((t) => t.valor === m.solicitud)?.texto ?? m.solicitud}`,
+        area: 'OPERACIONES',
+        descripcion: [m.material, m.codigo && `Código ${m.codigo}`].filter(Boolean).join(' · '),
+        fecha: m.fecha,
+        estado: ESTADOS_MAT[m.estado] ?? m.estado ?? 'PENDIENTE',
+        pdfUrl: null,
       }));
     },
   },

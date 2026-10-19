@@ -8,18 +8,35 @@ import { amapolanet, sql } from '../../config/db.js';
  *   sol_necesidades_usuarios (id_necesidad, id_usuario, necesidad, estado)
  * Todo en una transacción (en el C# cada INSERT iba por separado).
  */
-export function crear({ usuario, cargo, solicitante, departamento, fecha, sap, spi, necesidades }) {
+/**
+ * El C# mandaba la fecha como texto 'dd/MM/yyyy'. Si la columna es de tipo fecha y el idioma del login
+ * es inglés (mdy), SQL Server lee 19/10/2026 como mes 19 y falla. Se convierte explícitamente con estilo 103.
+ */
+let esFecha;
+async function columnaFechaEsFecha() {
+  if (esFecha === undefined) {
+    const [c] = await amapolanet.query(
+      `SELECT t.name AS tipo FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.user_type_id
+       WHERE c.object_id = OBJECT_ID('dbo.solicitudes_usuarios') AND c.name = 'fecha'`,
+    );
+    esFecha = /date|time/i.test(c?.tipo ?? '');
+  }
+  return esFecha;
+}
+
+export async function crear({ usuario, cargo, solicitante, departamento, fecha, sap, spi, necesidades }) {
+  const valorFecha = (await columnaFechaEsFecha()) ? 'CONVERT(DATETIME, @fecha, 103)' : '@fecha';
   return amapolanet.withTransaction(async (tx) => {
     const [cab] = await amapolanet.query(
       `INSERT INTO dbo.solicitudes_usuarios (usuario, cargo, solicitante, dpto, fecha, estado)
        OUTPUT INSERTED.id_solicitud AS id
-       VALUES (@usuario, @cargo, @solicitante, @dpto, @fecha, '1')`,
+       VALUES (@usuario, @cargo, @solicitante, @dpto, ${valorFecha}, '1')`,
       {
         usuario: [sql.NVarChar(150), usuario],
         cargo: [sql.NVarChar(150), cargo],
         solicitante: [sql.NVarChar(150), solicitante],
         dpto: [sql.NVarChar(150), departamento],
-        fecha: [sql.NVarChar(10), fecha], // el C# guardaba el texto dd/MM/yyyy
+        fecha: [sql.NVarChar(10), fecha], // dd/MM/yyyy, igual que el C#
       }, tx,
     );
     const id = cab.id;

@@ -6,7 +6,9 @@
   "main": "src/server.js",
   "scripts": {
     "dev": "node --watch src/server.js",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "probar-sql": "node scripts/probar-sql.js",
+    "probar-correo": "node scripts/probar-correo.js"
   },
   "engines": {
     "node": ">=20"

@@ -41,7 +41,9 @@ const base = {
 export const env = {
   port: Number(process.env.PORT || 5200),
   nodeEnv: process.env.NODE_ENV || 'development',
-  corsOrigin: (process.env.CORS_ORIGIN || 'http://localhost:5173').split(',').map((s) => s.trim()),
+  // Orígenes que pueden llamar a la API desde el navegador. Sin "/" final: el navegador nunca lo envía.
+  corsOrigin: (process.env.CORS_ORIGIN || 'http://localhost:5173')
+    .split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean),
   uploadsDir: process.env.UPLOADS_DIR || 'uploads',
   maxUploadMb: Number(process.env.MAX_UPLOAD_MB || 10),
   // Servidor IIS de la Intrapola actual: de ahí se sirven las imágenes guardadas con ruta "/intrapola/imagenes/"
@@ -60,8 +62,12 @@ export const env = {
     host: process.env.SMTP_HOST || 'industriasamapola-com.mail.protection.outlook.com',
     port: Number(process.env.SMTP_PORT || 25),
     from: process.env.SMTP_FROM || null, // en el C# es AppSettings["SmtpUser"]
+    // Nombre que se presenta en el EHLO. Office 365 rechaza nombres raros (con "_" o sin dominio).
+    ehlo: process.env.SMTP_EHLO || 'industriasamapola.com',
+    debug: process.env.SMTP_DEBUG === 'true', // muestra la conversación SMTP en la consola
     rrhh: process.env.CORREO_RRHH || 'satrrhh@industriasamapola.com',
     sistemas: process.env.CORREO_SISTEMAS || 'sistemas.amapola@industriasamapola.com',
+    materialesSap: (process.env.CORREO_MATERIALES_SAP || 'arepuestos@industriasamapola.com').split(',').map((s) => s.trim()).filter(Boolean),
     anticipos: (process.env.CORREO_ANTICIPOS || 'yromero@industriasamapola.com,cramirez@industriasamapola.com')
       .split(',').map((s) => s.trim()).filter(Boolean),
   },
