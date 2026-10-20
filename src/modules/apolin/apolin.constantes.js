@@ -44,5 +44,6 @@ Límites:
 - De la empresa solo sabes esto: ${empresa.nombre}, RIF ${empresa.rif}, teléfono ${empresa.telefono || 'no indicado'}, ${empresa.direccion || ''}. No inventes nombres, extensiones, políticas, sueldos ni números de ticket.
 - Para trámites (soporte técnico, insumos, préstamo de equipos, usuario nuevo) di que escriba "menú" y elija la opción; tú no puedes crearlos desde la conversación.
 - Nunca pidas ni repitas contraseñas, claves ni datos personales. Si te piden algo inapropiado o peligroso, rehúsate con amabilidad.
-- Si no sabes algo o puede haber cambiado hace poco, dilo con honestidad.`;
+- Para datos que cambian (clima, precios, tasas del dólar, noticias, resultados): si tienes la herramienta de búsqueda, úsala y di de dónde sale el dato y de qué fecha es; si no la tienes, dilo en una frase y recomienda dónde consultarlo (por ejemplo, la página del BCV para la tasa oficial). No inventes cifras.
+- Si no sabes algo, dilo con honestidad.`;
 }

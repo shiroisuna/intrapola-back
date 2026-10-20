@@ -61,14 +61,36 @@ const limpiar = (t) => String(t ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')
 /* ------------------------------------ llamadas ------------------------------------ */
 class SinCuota extends Error {}
 
+/*
+ * Búsqueda en internet (APOLIN_NUBE_BUSQUEDA=true): herramienta "browser_search" de Groq, disponible en
+ * openai/gpt-oss-20b y gpt-oss-120b. El modelo decide si busca (solo cuando la pregunta lo necesita).
+ * Si el servicio no la acepta, se desactiva sola y se sigue sin búsqueda.
+ */
+let busquedaRechazada = false;
+const usarBusqueda = () => process.env.APOLIN_NUBE_BUSQUEDA === 'true' && !busquedaRechazada;
+/** Quita las marcas de cita que agrega la búsqueda (【1†L3-L5】) y deja el texto limpio. */
+const sinCitas = (t) => t.replace(/【[^】]*】/g, '').replace(/[ \t]+\n/g, '\n').trim();
+
 async function llamarNube(mensajes, { maxTokens, tiempo }) {
   const c = cfg.nube();
+  const buscar = usarBusqueda();
+  const cuerpoPeticion = { model: c.modelo, messages: mensajes, max_tokens: maxTokens, temperature: 0.6 };
+  if (buscar) Object.assign(cuerpoPeticion, { tools: [{ type: 'browser_search' }], tool_choice: 'auto', reasoning_effort: 'low', max_tokens: Math.max(maxTokens, 2000) });
   const res = await fetch(`${c.url}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${c.clave}` },
     signal: AbortSignal.timeout(tiempo),
-    body: JSON.stringify({ model: c.modelo, messages: mensajes, max_tokens: maxTokens, temperature: 0.6 }),
+    body: JSON.stringify(cuerpoPeticion),
   });
+  if (buscar && res.status === 400) {
+    const detalle = await res.text().catch(() => '');
+    if (/tool|browser_search|reasoning/i.test(detalle)) {
+      busquedaRechazada = true;
+      console.warn(`[apolin] el modelo ${c.modelo} no acepta búsqueda en internet; sigo sin ella. ${detalle.slice(0, 160)}`);
+      return llamarNube(mensajes, { maxTokens, tiempo });
+    }
+    throw new Error(`HTTP 400 ${detalle.slice(0, 160)}`);
+  }
   if ([402, 403, 429].includes(res.status)) {
     const espera = Number(res.headers.get('retry-after'));
     const cuerpo = await res.text().catch(() => '');
@@ -79,7 +101,7 @@ async function llamarNube(mensajes, { maxTokens, tiempo }) {
   }
   if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text().catch(() => '')).slice(0, 160)}`);
   const data = await res.json();
-  return { texto: limpiar(data?.choices?.[0]?.message?.content), tokens: data?.usage?.total_tokens };
+  return { texto: sinCitas(limpiar(data?.choices?.[0]?.message?.content)), tokens: data?.usage?.total_tokens, busco: Boolean(data?.choices?.[0]?.message?.executed_tools?.length) };
 }
 
 async function llamarLocal(mensajes, { maxTokens, tiempo }) {
@@ -146,6 +168,7 @@ export async function estadoIa() {
   for (const p of ['nube', 'local']) {
     const c = cfg[p]();
     const item = { id: p, nombre: c.nombre, configurado: configurado[p](), modelo: c.modelo || null, uso: uso.proveedores[p] ?? { preguntas: 0, tokens: 0, errores: 0 } };
+    if (p === 'nube') item.busqueda = process.env.APOLIN_NUBE_BUSQUEDA === 'true' ? (busquedaRechazada ? 'rechazada' : 'activa') : 'apagada';
     if (agotado[p] && agotado[p] > Date.now()) item.agotadoHasta = new Date(agotado[p]).toISOString();
     if (item.configurado) {
       try {
