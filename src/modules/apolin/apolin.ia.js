@@ -11,25 +11,71 @@
  * (encabezado retry-after) o hasta mañana, y se usa el siguiente proveedor. Si no queda ninguno, Apolin avisa.
  */
 
+import { guardarDatos, leerDatos } from '../../utils/datosJson.js';
+
+/*
+ * Ajustes: lo que se guarda desde Admin → Apolin (datos/apolin-ia.json) manda sobre el .env.
+ * Lo que no se haya guardado en el panel se toma de las variables APOLIN_* del .env.
+ */
+function desdeEnv() {
+  const e = process.env;
+  return {
+    orden: e.APOLIN_IA_ORDEN || 'nube,local',
+    preguntasDia: Number(e.APOLIN_PREGUNTAS_DIA || 25),
+    maxTokens: Number(e.APOLIN_MAX_TOKENS || 900),
+    nube: { nombre: e.APOLIN_NUBE_NOMBRE || 'nube', url: e.APOLIN_NUBE_URL || '', clave: e.APOLIN_NUBE_CLAVE || '', modelo: e.APOLIN_NUBE_MODELO || '', busqueda: e.APOLIN_NUBE_BUSQUEDA === 'true' },
+    local: { url: e.APOLIN_OLLAMA_URL || '', modelo: e.APOLIN_OLLAMA_MODELO || 'llama3.2' },
+  };
+}
+export function ajustes() {
+  const base = desdeEnv();
+  const g = leerDatos('apolin-ia', {});
+  return {
+    ...base,
+    ...Object.fromEntries(Object.entries(g).filter(([k, v]) => !['nube', 'local'].includes(k) && v !== undefined && v !== null)),
+    nube: { ...base.nube, ...(g.nube ?? {}) },
+    local: { ...base.local, ...(g.local ?? {}) },
+  };
+}
+/** Guarda desde el panel. Si la clave viene vacía se conserva la anterior. */
+export function guardarAjustes(nuevo, usuario) {
+  const actual = leerDatos('apolin-ia', {});
+  const nube = { ...(actual.nube ?? {}), ...nuevo.nube };
+  if (!nuevo.nube?.clave) nube.clave = actual.nube?.clave ?? undefined;
+  if (nuevo.nube?.quitarClave) nube.clave = '';
+  delete nube.quitarClave;
+  guardarDatos('apolin-ia', { ...actual, ...nuevo, nube, local: { ...(actual.local ?? {}), ...nuevo.local }, actualizadoEn: new Date().toISOString(), actualizadoPor: usuario });
+  // Con ajustes nuevos se vuelve a intentar todo
+  busquedaRechazada = false;
+  for (const k of Object.keys(agotado)) delete agotado[k];
+  for (const k of Object.keys(ultimoError)) delete ultimoError[k];
+  return ajustesPublicos();
+}
+/** Lo que ve el panel: nunca la clave completa. */
+export function ajustesPublicos() {
+  const a = ajustes();
+  const { clave, ...nube } = a.nube;
+  const g = leerDatos('apolin-ia', {});
+  return {
+    ...a,
+    nube: { ...nube, claveConfigurada: Boolean(clave), claveFinal: clave ? clave.slice(-4) : null },
+    actualizadoEn: g.actualizadoEn ?? null,
+    actualizadoPor: g.actualizadoPor ?? null,
+  };
+}
+
+const sinBarra = (u) => String(u || '').replace(/\/+$/, '');
 const cfg = {
-  nube: () => ({
-    url: (process.env.APOLIN_NUBE_URL || '').replace(/\/+$/, ''),
-    clave: process.env.APOLIN_NUBE_CLAVE || '',
-    modelo: process.env.APOLIN_NUBE_MODELO || '',
-    nombre: process.env.APOLIN_NUBE_NOMBRE || 'nube',
-  }),
-  local: () => ({
-    url: (process.env.APOLIN_OLLAMA_URL || '').replace(/\/+$/, ''),
-    modelo: process.env.APOLIN_OLLAMA_MODELO || 'llama3.2',
-    nombre: 'Ollama (servidor)',
-  }),
+  nube: () => { const n = ajustes().nube; return { ...n, url: sinBarra(n.url), nombre: n.nombre || 'nube' }; },
+  local: () => { const l = ajustes().local; return { ...l, url: sinBarra(l.url), nombre: 'Ollama (servidor)' }; },
 };
 const configurado = {
   nube: () => { const c = cfg.nube(); return Boolean(c.url && c.clave && c.modelo); },
-  local: () => Boolean(cfg.local().url),
+  local: () => Boolean(cfg.local().url && cfg.local().modelo),
 };
-const orden = () => (process.env.APOLIN_IA_ORDEN || 'nube,local').split(',').map((s) => s.trim()).filter((p) => configurado[p]?.());
+const orden = () => String(ajustes().orden).split(',').map((x) => x.trim()).filter((p) => configurado[p]?.());
 export const iaConfigurada = () => orden().length > 0;
+const ultimoError = {}; // proveedor → { mensaje, fecha }
 
 /* ------------------------------- estado y uso del día ------------------------------- */
 const hoy = () => new Date().toLocaleDateString('en-CA'); // AAAA-MM-DD, hora del servidor
@@ -49,7 +95,7 @@ const mananaTemprano = () => { const d = new Date(); d.setDate(d.getDate() + 1);
 /** Preguntas generales por persona y por día (APOLIN_PREGUNTAS_DIA, por defecto 25). */
 export function cupoPersona(clave) {
   reiniciarSiCambioElDia();
-  const max = Number(process.env.APOLIN_PREGUNTAS_DIA || 25);
+  const max = Number(ajustes().preguntasDia) || 25;
   const usadas = uso.personas.get(clave) ?? 0;
   return { usadas, max, quedan: Math.max(0, max - usadas) };
 }
@@ -67,7 +113,7 @@ class SinCuota extends Error {}
  * Si el servicio no la acepta, se desactiva sola y se sigue sin búsqueda.
  */
 let busquedaRechazada = false;
-const usarBusqueda = () => process.env.APOLIN_NUBE_BUSQUEDA === 'true' && !busquedaRechazada;
+const usarBusqueda = () => Boolean(ajustes().nube.busqueda) && !busquedaRechazada;
 /** Quita las marcas de cita que agrega la búsqueda (【1†L3-L5】) y deja el texto limpio. */
 const sinCitas = (t) => t.replace(/【[^】]*】/g, '').replace(/[ \t]+\n/g, '\n').trim();
 
@@ -94,10 +140,13 @@ async function llamarNube(mensajes, { maxTokens, tiempo }) {
   if ([402, 403, 429].includes(res.status)) {
     const espera = Number(res.headers.get('retry-after'));
     const cuerpo = await res.text().catch(() => '');
+    const hablaDeCuota = /day|daily|quota|credit|exhaust|limit|diari|cuota|insufficient/i.test(cuerpo);
+    // Un 403 que no habla de cuota es un rechazo (clave, país o permisos): se informa, no se bloquea hasta mañana
+    if (res.status === 403 && !hablaDeCuota) throw new Error(`HTTP 403 ${cuerpo.slice(0, 200)}`);
     // Un 429 por minuto se espera unos segundos; si habla de cuota diaria o créditos, hasta mañana
-    const diario = res.status !== 429 || /day|daily|quota|credit|exhaust|diari|cuota/i.test(cuerpo) || espera > 300;
+    const diario = res.status === 402 || /day|daily|quota|credit|exhaust|diari|cuota|insufficient/i.test(cuerpo) || espera > 300;
     agotado.nube = diario ? mananaTemprano() : Date.now() + Math.max(15, espera || 30) * 1000;
-    throw new SinCuota(`${res.status} ${cuerpo.slice(0, 160)}`);
+    throw new SinCuota(`${res.status} ${cuerpo.slice(0, 200)}`);
   }
   if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text().catch(() => '')).slice(0, 160)}`);
   const data = await res.json();
@@ -133,7 +182,7 @@ export async function preguntarIa(sistema, historial, pregunta, { modo = 'genera
   const mensajes = [{ role: 'system', content: sistema }, ...historial.slice(-6), { role: 'user', content: pregunta }];
   const opciones = modo === 'corto'
     ? { maxTokens: 120, tiempo: 20_000 }
-    : { maxTokens: Number(process.env.APOLIN_MAX_TOKENS || 900), tiempo: Number(process.env.APOLIN_IA_TIMEOUT_MS || 90_000) };
+    : { maxTokens: Number(ajustes().maxTokens) || 900, tiempo: Number(process.env.APOLIN_IA_TIMEOUT_MS || 90_000) };
 
   let huboCuota = false;
   for (const p of orden()) {
@@ -145,6 +194,7 @@ export async function preguntarIa(sistema, historial, pregunta, { modo = 'genera
       return { texto: r.texto.slice(0, 4000), proveedor: p };
     } catch (err) {
       (uso.proveedores[p] ??= { preguntas: 0, tokens: 0, errores: 0 }).errores += 1;
+      ultimoError[p] = { mensaje: (err.name === 'TimeoutError' ? 'tiempo de espera agotado' : err.message).slice(0, 240), fecha: new Date().toISOString() };
       if (err instanceof SinCuota) { huboCuota = true; console.warn(`[apolin] ${cfg[p]().nombre} sin cuota: ${err.message}`); continue; }
       console.warn(`[apolin] ${cfg[p]().nombre} no respondió: ${err.name === 'TimeoutError' ? 'tiempo agotado' : err.message}`);
     }
@@ -168,7 +218,8 @@ export async function estadoIa() {
   for (const p of ['nube', 'local']) {
     const c = cfg[p]();
     const item = { id: p, nombre: c.nombre, configurado: configurado[p](), modelo: c.modelo || null, uso: uso.proveedores[p] ?? { preguntas: 0, tokens: 0, errores: 0 } };
-    if (p === 'nube') item.busqueda = process.env.APOLIN_NUBE_BUSQUEDA === 'true' ? (busquedaRechazada ? 'rechazada' : 'activa') : 'apagada';
+    if (p === 'nube') item.busqueda = c.busqueda ? (busquedaRechazada ? 'rechazada' : 'activa') : 'apagada';
+    if (ultimoError[p]) item.ultimoError = ultimoError[p];
     if (agotado[p] && agotado[p] > Date.now()) item.agotadoHasta = new Date(agotado[p]).toISOString();
     if (item.configurado) {
       try {
@@ -189,7 +240,7 @@ export async function estadoIa() {
     }
     proveedores.push(item);
   }
-  return { configurada: iaConfigurada(), orden: orden(), preguntasPorPersona: Number(process.env.APOLIN_PREGUNTAS_DIA || 25), personasHoy: uso.personas.size, proveedores };
+  return { configurada: iaConfigurada(), orden: orden(), preguntasPorPersona: Number(ajustes().preguntasDia) || 25, personasHoy: uso.personas.size, proveedores };
 }
 
 /* ---- Frecuencia: máximo 15 mensajes a la IA por minuto por equipo (check_rate_limit_ia) ---- */
@@ -234,4 +285,49 @@ export function analizarIntencion(texto) {
   }
   if (tiene('usuario nuevo', 'nuevo usuario', 'crear usuario', 'crear un usuario', 'eliminar usuario', 'modificar usuario')) return ['usuario', null];
   return ['conversacion', null];
+}
+
+/* ------------------------------ herramientas del panel ------------------------------ */
+/** Quita el bloqueo por cuota y vuelve a intentar la búsqueda. */
+export function desbloquear() {
+  for (const k of Object.keys(agotado)) delete agotado[k];
+  for (const k of Object.keys(ultimoError)) delete ultimoError[k];
+  busquedaRechazada = false;
+}
+
+/** Modelos disponibles en el proveedor (con los datos guardados o con los que se están editando). */
+export async function listarModelos(proveedor, prueba = {}) {
+  if (proveedor === 'local') {
+    const url = sinBarra(prueba.url || cfg.local().url);
+    if (!url) throw new Error('Indique la dirección de Ollama');
+    const r = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) throw new Error(`Ollama respondió HTTP ${r.status}`);
+    return ((await r.json()).models ?? []).map((m) => m.name).sort();
+  }
+  const c = cfg.nube();
+  const url = sinBarra(prueba.url || c.url);
+  const clave = prueba.clave || c.clave;
+  if (!url || !clave) throw new Error('Indique la dirección y la clave del servicio');
+  const r = await fetch(`${url}/models`, { headers: { Authorization: `Bearer ${clave}` }, signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`El servicio respondió HTTP ${r.status}: ${(await r.text().catch(() => '')).slice(0, 160)}`);
+  const data = await r.json();
+  return (data.data ?? data.models ?? []).map((m) => m.id ?? m.name).filter(Boolean).sort();
+}
+
+/** Pregunta de prueba a un proveedor concreto, sin gastar cupo de nadie. */
+export async function probar(proveedor) {
+  if (!configurado[proveedor]?.()) return { ok: false, error: 'No está configurado' };
+  const inicio = Date.now();
+  try {
+    const r = await LLAMAR[proveedor](
+      [{ role: 'system', content: 'Responde en español, en una sola frase corta.' }, { role: 'user', content: 'Saluda y di qué modelo eres.' }],
+      { maxTokens: 300, tiempo: 60_000 },
+    );
+    delete ultimoError[proveedor];
+    return { ok: true, texto: r.texto, ms: Date.now() - inicio, busco: r.busco ?? false };
+  } catch (err) {
+    const mensaje = err.name === 'TimeoutError' ? 'tiempo de espera agotado' : err.message;
+    ultimoError[proveedor] = { mensaje: mensaje.slice(0, 240), fecha: new Date().toISOString() };
+    return { ok: false, error: mensaje, ms: Date.now() - inicio };
+  }
 }

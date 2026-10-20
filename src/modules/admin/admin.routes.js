@@ -13,7 +13,7 @@ import * as normas from '../documentos/normas.service.js';
 import * as tema from '../tema/tema.service.js';
 import * as directorio from '../directorio/directorio.repository.js';
 import * as apolin from '../apolin/apolin.repository.js';
-import { estadoIa } from '../apolin/apolin.ia.js';
+import * as iaApolin from '../apolin/apolin.ia.js';
 import multer from 'multer';
 
 /*
@@ -210,7 +210,40 @@ router.put('/empresa', validate(z.object({
 });
 
 /* ------------------------------------ apolin ------------------------------------ */
-router.get('/apolin/estado', asyncHandler(async (_req, res) => res.json({ ia: await estadoIa() })));
+router.get('/apolin/estado', asyncHandler(async (_req, res) => res.json({ ia: await iaApolin.estadoIa() })));
+
+// Ajustes de la IA (proveedor, modelo, clave, búsqueda, cupos). Se guardan en datos/apolin-ia.json y mandan sobre el .env
+const urlOVacio = z.union([z.url('Dirección inválida (debe empezar con http:// o https://)').max(300), z.literal('')]);
+router.get('/apolin/ia', (_req, res) => res.json(iaApolin.ajustesPublicos()));
+router.put('/apolin/ia', validate(z.object({
+  orden: z.enum(['nube,local', 'local,nube', 'nube', 'local'], { error: 'Orden inválido' }),
+  preguntasDia: z.coerce.number().int().min(1, 'Mínimo 1').max(500, 'Máximo 500'),
+  maxTokens: z.coerce.number().int().min(200, 'Mínimo 200').max(8000, 'Máximo 8000'),
+  nube: z.object({
+    nombre: z.string().trim().max(40).default('nube'),
+    url: urlOVacio,
+    modelo: z.string().trim().max(150),
+    clave: z.string().trim().max(400).optional().default(''),
+    quitarClave: z.boolean().optional().default(false),
+    busqueda: z.boolean(),
+  }),
+  local: z.object({ url: urlOVacio, modelo: z.string().trim().max(150) }),
+})), (req, res) => res.json(iaApolin.guardarAjustes(req.body, req.admin.u)));
+
+router.post('/apolin/ia/modelos', validate(z.object({
+  proveedor: z.enum(['nube', 'local']),
+  url: z.string().trim().max(300).optional(),
+  clave: z.string().trim().max(400).optional(),
+})), asyncHandler(async (req, res) => {
+  try {
+    res.json({ modelos: await iaApolin.listarModelos(req.body.proveedor, req.body) });
+  } catch (err) {
+    throw badRequest(err.name === 'TimeoutError' ? 'El servicio no respondió a tiempo' : err.message);
+  }
+}));
+router.post('/apolin/ia/probar', validate(z.object({ proveedor: z.enum(['nube', 'local']) })),
+  asyncHandler(async (req, res) => res.json(await iaApolin.probar(req.body.proveedor))));
+router.post('/apolin/ia/desbloquear', (_req, res) => { iaApolin.desbloquear(); res.json({ ok: true }); });
 
 router.get('/apolin/recordatorios', asyncHandler(async (_req, res) => res.json(await apolin.recordatoriosActivos())));
 
