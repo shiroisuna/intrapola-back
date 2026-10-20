@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import PDFDocument from 'pdfkit';
-import { EMPRESA } from '../modules/contenido/contenido.constantes.js';
+import { EMPRESA as EMPRESA_INICIAL } from '../modules/contenido/contenido.constantes.js';
+import { leerDatos } from './datosJson.js';
+// Datos editables desde el panel (Empresa)
+const empresa = () => leerDatos('empresa', EMPRESA_INICIAL);
 
 /*
  * Piezas comunes de las hojas PDF de la Intrapola (permiso, papelería, ...).
@@ -22,7 +25,7 @@ export function nuevoDocumento(tituloDoc) {
   const doc = new PDFDocument({
     size: 'LETTER',
     margins: { top: MARGEN, left: MARGEN, right: MARGEN, bottom: 10 }, // el pie se dibuja a mano
-    info: { Title: tituloDoc, Author: EMPRESA.nombre },
+    info: { Title: tituloDoc, Author: empresa().nombre },
   });
   doc.ancho = doc.page.width - MARGEN * 2;
   return doc;
@@ -47,9 +50,9 @@ export function encabezado(doc, { area, numero, etiquetaNumero = 'N.º de solici
     doc.image(LOGO, X, 30, { fit: [54, 54] });
     xTexto = X + 66;
   }
-  doc.font('Helvetica-Bold').fontSize(15).fillColor(C.tinta).text(EMPRESA.nombre, xTexto, 34);
+  doc.font('Helvetica-Bold').fontSize(15).fillColor(C.tinta).text(empresa().nombre, xTexto, 34);
   doc.font('Helvetica').fontSize(8.5).fillColor(C.gris)
-    .text(`RIF ${EMPRESA.rif}`, xTexto, 54)
+    .text(`RIF ${empresa().rif}`, xTexto, 54)
     .text(area, xTexto, 66);
 
   const anchoCaja = 150;
@@ -108,7 +111,7 @@ export function pie(doc) {
   const y = doc.page.height - 60;
   doc.moveTo(MARGEN, y).lineTo(MARGEN + doc.ancho, y).lineWidth(0.6).strokeColor(C.linea).stroke();
   doc.font('Helvetica').fontSize(7.5).fillColor(C.gris)
-    .text(`${EMPRESA.direccion}  ·  Tel. ${EMPRESA.telefono}`, MARGEN, y + 8, { width: doc.ancho, lineBreak: false })
+    .text(`${empresa().direccion}  ·  Tel. ${empresa().telefono}`, MARGEN, y + 8, { width: doc.ancho, lineBreak: false })
     .text('Generado por Intrapola — Departamento de Sistemas', MARGEN, y + 20, { width: doc.ancho, lineBreak: false });
 }
 

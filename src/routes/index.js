@@ -21,6 +21,8 @@ import documentos from '../modules/documentos/documentos.routes.js';
 import eventos from '../modules/eventos/eventos.routes.js';
 import precios from '../modules/precios/precios.routes.js';
 import contenido from '../modules/contenido/contenido.routes.js';
+import tema from '../modules/tema/tema.routes.js';
+import admin from '../modules/admin/admin.routes.js';
 
 const router = Router();
 
@@ -60,5 +62,7 @@ router.use('/documentos', documentos);
 router.use('/eventos', eventos);
 router.use('/precios', precios);
 router.use('/contenido', contenido);
+router.use('/tema', tema);
+router.use('/admin', admin);
 
 export default router;

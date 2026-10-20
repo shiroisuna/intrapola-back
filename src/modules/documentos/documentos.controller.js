@@ -1,14 +1,16 @@
-import * as repo from './documentos.repository.js';
-import { cached, invalidate } from '../../utils/cache.js';
-import { publicUrl } from '../../middlewares/upload.js';
-import { badRequest } from '../../utils/http.js';
+import { cached } from '../../utils/cache.js';
+import { pendiente } from '../../utils/http.js';
+import * as normasSvc from './normas.service.js';
 
-export const normas = async (_req, res) => res.json(await cached('doc:NORMA', 600, () => repo.porCategoria('NORMA')));
-export const formatos = async (_req, res) => res.json(await cached('doc:FORMATO', 600, () => repo.porCategoria('FORMATO')));
+// Normas: PDF en la carpeta NORMAS_DIR (ver normas.service.js)
+export const normas = async (_req, res) => res.json(await cached('doc:NORMA', 300, async () => normasSvc.listar()));
 
-export async function crear(req, res) {
-  if (!req.file) throw badRequest('Adjunte el archivo del documento');
-  const row = await repo.crear({ ...req.body, archivoUrl: publicUrl('documentos', req.file) });
-  invalidate(`doc:${req.body.categoria}`);
-  res.status(201).json(row);
+export function archivoNorma(req, res) {
+  const ruta = normasSvc.archivo(req.params.archivo);
+  const nombre = encodeURIComponent(req.params.archivo);
+  res.set('Content-Disposition', `${'descargar' in req.query ? 'attachment' : 'inline'}; filename*=UTF-8''${nombre}`);
+  res.sendFile(ruta, { headers: { 'Content-Type': 'application/pdf' } });
 }
+
+// Formatos generales: siguen pendientes (los formatos con pantalla propia están en /formatos)
+export const formatos = async () => { throw pendiente('Formatos'); };

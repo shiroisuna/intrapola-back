@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { C, MARGEN, ALTO_FIRMAS, nuevoDocumento, filaCampos, campo, firmas, pie, fechaCorta } from '../../utils/pdf.js';
-import { EMPRESA } from '../contenido/contenido.constantes.js';
+import { EMPRESA as EMPRESA_INICIAL } from '../contenido/contenido.constantes.js';
+import { leerDatos } from '../../utils/datosJson.js';
+// Datos editables desde el panel (Empresa)
+const empresa = () => leerDatos('empresa', EMPRESA_INICIAL);
 
 const LOGO = path.resolve('assets/logo.png');
 
@@ -19,8 +22,8 @@ function encabezadoFormato(doc, f) {
 
   if (fs.existsSync(LOGO)) doc.image(LOGO, MARGEN + 8, y + 6, { fit: [30, 30] });
   doc.font('Helvetica-Bold').fontSize(8.5).fillColor(C.tinta)
-    .text(EMPRESA.nombre, MARGEN + 4, y + 38, { width: anchoIzq - 8, align: 'center' });
-  doc.font('Helvetica').fontSize(7.5).text(`RIF ${EMPRESA.rif}`, MARGEN + 4, y + 50, { width: anchoIzq - 8, align: 'center' });
+    .text(empresa().nombre, MARGEN + 4, y + 38, { width: anchoIzq - 8, align: 'center' });
+  doc.font('Helvetica').fontSize(7.5).text(`RIF ${empresa().rif}`, MARGEN + 4, y + 50, { width: anchoIzq - 8, align: 'center' });
 
   doc.font('Helvetica-Bold').fontSize(10).text(f.titulo.toUpperCase(), MARGEN + anchoIzq + 10, y + 24, { width: W - anchoIzq - anchoDer - 20, align: 'center' });
 

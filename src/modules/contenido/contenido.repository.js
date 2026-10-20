@@ -1,6 +1,7 @@
 import { amapolanet, sql } from '../../config/db.js';
 import { urlImagen, urlLegacy, tituloDesdeArchivo } from '../../utils/imagenesLegacy.js';
 import { EMPRESA, ENLACES, PRODUCTOS } from './contenido.constantes.js';
+import { guardarDatos, leerDatos } from '../../utils/datosJson.js';
 
 /*
  * Banners y comunicados: tablas de la Intrapola actual en amapolanet.
@@ -110,4 +111,47 @@ export const desactivarComunicado = (id) => amapolanet.query(
 // Sin tabla: vienen de contenido.constantes.js
 export const productos = async () => PRODUCTOS.map((p) => ({ ...p, imagenUrl: urlLegacy(p.imagenUrl) }));
 export const enlaces = async () => ENLACES;
-export const empresa = async () => EMPRESA;
+// Datos de la empresa: editables desde el panel (datos/empresa.json); EMPRESA son los valores iniciales
+export const empresa = async () => leerDatos('empresa', EMPRESA);
+export const EMPRESA_INICIAL = EMPRESA;
+export const guardarEmpresa = (datos) => guardarDatos('empresa', { ...EMPRESA, ...datos });
+
+/* ---------------------- Gestión (panel de administración) ---------------------- */
+/** Banners o comunicados con su estado, los activos primero. */
+function listarTodos(tabla, columnaId, columnaImg) {
+  return async () => {
+    const filas = await amapolanet.query(
+      `SELECT TOP 200 ${columnaId} AS id, RTRIM(${columnaImg}) AS img, RTRIM(ruta) AS ruta, RTRIM(estatus) AS estatus
+       FROM dbo.${tabla}
+       ORDER BY CASE WHEN RTRIM(estatus) = 'ACTIVO' THEN 0 ELSE 1 END, ${columnaId} DESC`,
+    );
+    return filas.map((f) => ({
+      id: f.id,
+      titulo: tituloDesdeArchivo(f.img),
+      imagenUrl: urlImagen(f.ruta, f.img),
+      activo: f.estatus === 'ACTIVO',
+      subidaAqui: (f.ruta || '').startsWith('/uploads/'),
+    }));
+  };
+}
+
+function cambiarEstado(tabla, columnaId) {
+  return async (id, activo) => {
+    const [f] = await amapolanet.query(
+      `UPDATE dbo.${tabla} SET estatus = @estatus OUTPUT inserted.${columnaId} AS id WHERE ${columnaId} = @id`,
+      { id: [sql.Int, id], estatus: [sql.NVarChar(10), activo ? 'ACTIVO' : 'INACTIVO'] },
+    );
+    return f ?? null;
+  };
+}
+
+export const todosBanners = listarTodos('intrapola_banner', 'id_banner', 'img');
+export const estadoBanner = cambiarEstado('intrapola_banner', 'id_banner');
+export const todosComunicados = listarTodos('intrapola_comunicado', 'id_comunicado', 'imagen');
+export const estadoComunicado = cambiarEstado('intrapola_comunicado', 'id_comunicado');
+
+/** Deja inactivos todos los comunicados menos uno (al publicar uno nuevo que reemplaza al vigente). */
+export const desactivarOtrosComunicados = (id) => amapolanet.query(
+  `UPDATE dbo.intrapola_comunicado SET estatus = 'INACTIVO' WHERE id_comunicado <> @id AND RTRIM(estatus) = 'ACTIVO'`,
+  { id: [sql.Int, id] },
+);
