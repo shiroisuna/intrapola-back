@@ -12,6 +12,9 @@ import * as eventos from '../eventos/eventos.service.js';
 import * as normas from '../documentos/normas.service.js';
 import * as tema from '../tema/tema.service.js';
 import * as directorio from '../directorio/directorio.repository.js';
+import * as apolin from '../apolin/apolin.repository.js';
+import { estadoIa } from '../apolin/apolin.ia.js';
+import multer from 'multer';
 
 /*
  * Panel de administración: /api/admin/...
@@ -205,6 +208,51 @@ router.put('/empresa', validate(z.object({
   invalidate('contenido:');
   res.json(e);
 });
+
+/* ------------------------------------ apolin ------------------------------------ */
+router.get('/apolin/estado', asyncHandler(async (_req, res) => res.json({ ia: await estadoIa() })));
+
+router.get('/apolin/recordatorios', asyncHandler(async (_req, res) => res.json(await apolin.recordatoriosActivos())));
+
+// La imagen se guarda en la tabla (varbinary), igual que en el chatbot: se recibe en memoria, máx. 5 MB
+const imagenRecordatorio = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, f, cb) => (/^image\/(png|jpeg|gif|webp)$/.test(f.mimetype) ? cb(null, true) : cb(badRequest('La imagen debe ser JPG, PNG, GIF o WEBP'))),
+}).single('imagen');
+const fechaIso = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida');
+router.post('/apolin/recordatorios', imagenRecordatorio, validate(z.object({
+  titulo: texto(200, 'Indique el título'),
+  mensaje: texto(2000, 'Escriba el mensaje'),
+  tipo: z.enum(['Recordatorio', 'Evento', 'Aviso'], { error: 'Seleccione el tipo' }),
+  fechaInicio: fechaIso,
+  fechaFin: fechaIso,
+}).refine((d) => d.fechaFin >= d.fechaInicio, { path: ['fechaFin'], message: 'Debe ser igual o posterior a la fecha de inicio' })),
+asyncHandler(async (req, res) => {
+  await apolin.crearRecordatorio({
+    ...req.body,
+    fechaInicio: new Date(`${req.body.fechaInicio}T00:00:00Z`),
+    fechaFin: new Date(`${req.body.fechaFin}T00:00:00Z`),
+    imagen: req.file?.buffer,
+    imagenTipo: req.file?.mimetype,
+    creadoPor: req.admin.u,
+  });
+  res.status(201).json(await apolin.recordatoriosActivos());
+}));
+
+router.delete('/apolin/recordatorios/:id', validate(id, 'params'), asyncHandler(async (req, res) => {
+  const [r] = await apolin.desactivarRecordatorio(req.params.id);
+  if (!r) throw notFound('El recordatorio no existe');
+  res.json(await apolin.recordatoriosActivos());
+}));
+
+router.get('/apolin/prestamos', asyncHandler(async (_req, res) => res.json(await apolin.prestamos())));
+router.patch('/apolin/prestamos/:id', validate(id, 'params'), validate(z.object({ estado: z.enum(['Pendiente', 'Devuelto', 'Cancelado']) })),
+  asyncHandler(async (req, res) => {
+    const [r] = await apolin.cambiarEstadoPrestamo(req.params.id, req.body.estado);
+    if (!r) throw notFound('El préstamo no existe');
+    res.json(await apolin.prestamos());
+  }));
 
 /* ---------------------------------- apariencia ---------------------------------- */
 const color = z.string().regex(/^#[0-9a-f]{6}$/i, 'Color inválido (use #RRGGBB)').transform((c) => c.toLowerCase());
