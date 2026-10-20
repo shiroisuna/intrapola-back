@@ -4,9 +4,11 @@ import { enviarCorreo } from '../../utils/correo.js';
 import * as empleados from '../empleados/empleados.repository.js';
 import * as soporte from '../soporte/soporte.repository.js';
 import * as repo from './apolin.repository.js';
-import { analizarIntencion, chatIa, iaConfigurada, puedeUsarIa } from './apolin.ia.js';
+import { analizarIntencion, cupoPersona, iaConfigurada, preguntaGeneral, puedeUsarIa } from './apolin.ia.js';
+import { leerDatos } from '../../utils/datosJson.js';
+import { EMPRESA } from '../contenido/contenido.constantes.js';
 import {
-  CARAS, CATEGORIAS, DIAS_MAX_PRESTAMO, EQUIPOS_PRESTAMO, MINUTOS_CONVERSACION, OPCIONES_INSUMOS, PALABRAS_SALUDO,
+  CARAS, CATEGORIAS, contextoGeneral, DIAS_MAX_PRESTAMO, EQUIPOS_PRESTAMO, MINUTOS_CONVERSACION, OPCIONES_INSUMOS, PALABRAS_SALUDO,
 } from './apolin.constantes.js';
 
 /*
@@ -184,7 +186,11 @@ async function pasoMenu(c, texto, ip) {
   if (op === CATEGORIAS.usuario) return usuarioNuevo(c);
   if (op === CATEGORIAS.conversar && iaConfigurada()) {
     c.paso = 'conversar';
-    return responder(c, `Claro, ${primerNombre(c.usuario)}. Cuéntame qué necesitas.`, { opciones: ['Volver al menú'], sugerencia: 'Escribe tu pregunta' });
+    const { quedan } = cupoPersona(c.usuario.ficha);
+    return responder(c, [
+      `¡Claro, ${primerNombre(c.usuario)}! Pregúntame lo que quieras: fórmulas de Excel, cómo redactar un correo, una explicación, una idea…`,
+      `ℹ️ Estas preguntas las respondo con un servicio de inteligencia artificial externo: **no escribas claves ni datos confidenciales**. Hoy te quedan **${quedan}** preguntas. Para volver a los trámites escribe **menú**.`,
+    ], { opciones: ['Volver al menú'], sugerencia: 'Escribe tu pregunta' });
   }
   // Texto libre en el menú: si hay IA se interpreta, si no se repite el menú
   if (iaConfigurada()) { c.paso = 'conversar'; return pasoConversar(c, texto, ip); }
@@ -309,10 +315,25 @@ async function pasoConversar(c, texto, ip) {
   if (intencion === 'usuario') return usuarioNuevo(c);
 
   if (!puedeUsarIa(ip)) return responder(c, '⏳ Espera un momento antes de escribir de nuevo.', { opciones: ['Volver al menú'] });
-  const respuesta = await chatIa(texto, c.historialIa);
-  if (!respuesta) return menu(c, ['Ahora no puedo conversar, pero sí puedo ayudarte con una solicitud.'], CARAS.confundido);
-  c.historialIa = [...c.historialIa, { role: 'user', content: texto }, { role: 'assistant', content: respuesta }].slice(-4);
-  return responder(c, respuesta, { opciones: ['Volver al menú'], sugerencia: 'Escribe tu pregunta' });
+  if (texto.length < 2) return responder(c, '¿Qué quieres preguntarme?', { opciones: ['Volver al menú'], sugerencia: 'Escribe tu pregunta' });
+
+  const empresa = leerDatos('empresa', EMPRESA);
+  const r = await preguntaGeneral(c.usuario.ficha, contextoGeneral({ empresa, usuario: c.usuario }), c.historialIa, texto);
+  const opciones = ['Volver al menú'];
+
+  if (r.motivo === 'agotado') {
+    return menu(c, ['😅 Me quedé sin memoria amplia por hoy para temas generales. Mañana vuelvo a tenerla.', 'Mientras tanto sí puedo ayudarte con los trámites de la intranet:'], CARAS.confundido);
+  }
+  if (r.motivo === 'cupo_persona') {
+    return menu(c, [`Ya usaste tus ${r.cupo.max} preguntas generales de hoy. Mañana puedes seguir preguntándome.`, 'Con los trámites de la intranet te ayudo cuando quieras:'], CARAS.confundido);
+  }
+  if (r.motivo) {
+    return responder(c, 'Ahora no logro conectarme con mi memoria amplia. Intenta de nuevo en un rato, o escribe **menú** para hacer una solicitud.', { opciones, cara: CARAS.confundido, sugerencia: 'Escribe tu pregunta' });
+  }
+  c.historialIa = [...c.historialIa, { role: 'user', content: texto }, { role: 'assistant', content: r.texto }].slice(-6);
+  const partes = [r.texto];
+  if (r.cupo.quedan <= 3) partes.push(r.cupo.quedan ? `_Te quedan ${r.cupo.quedan} preguntas generales hoy._` : '_Esa fue tu última pregunta general de hoy._');
+  return responder(c, partes, { opciones, sugerencia: 'Escribe otra pregunta', cara: CARAS.normal });
 }
 
 /* ------------------------------------ entrada ------------------------------------ */
@@ -330,7 +351,8 @@ export async function mensaje({ conversacion: id, texto = '' }, ip) {
     if (['menu', 'volver al menu', 'otra solicitud', 'cancelar', 'volver'].includes(s)) {
       return menu(c, s === 'cancelar' && c.paso.startsWith('prestamo') ? ['Préstamo cancelado.'] : []);
     }
-    if (['terminar', 'salir', 'adios', 'chao', 'gracias'].includes(s)) {
+    // "gracias" en medio de una pregunta general no termina la conversación
+    if (['terminar', 'salir', 'adios', 'chao'].includes(s) || (s === 'gracias' && c.paso !== 'conversar')) {
       conversaciones.delete(c.id);
       const nueva = conversacion();
       return responder(nueva, `¡Hasta luego, ${primerNombre(c.usuario)}! Cuando me necesites, aquí estaré.`, { entrada: 'numero', sugerencia: 'Número de ficha', cara: CARAS.feliz });
