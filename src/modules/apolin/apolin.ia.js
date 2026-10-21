@@ -12,6 +12,7 @@
  */
 
 import { guardarDatos, leerDatos } from '../../utils/datosJson.js';
+import { badRequest } from '../../utils/http.js';
 
 /*
  * Ajustes: lo que se guarda desde Admin → Apolin (datos/apolin-ia.json) manda sobre el .env.
@@ -30,10 +31,13 @@ function desdeEnv() {
 export function ajustes() {
   const base = desdeEnv();
   const g = leerDatos('apolin-ia', {});
+  // Si en el panel se eligió otro servicio, la clave y el modelo del .env (de otro proveedor) no sirven
+  const otroServicio = g.nube?.url && sinBarra(g.nube.url) !== sinBarra(base.nube.url);
+  const baseNube = otroServicio ? { ...base.nube, clave: '', modelo: '', busqueda: false } : base.nube;
   return {
     ...base,
     ...Object.fromEntries(Object.entries(g).filter(([k, v]) => !['nube', 'local'].includes(k) && v !== undefined && v !== null)),
-    nube: { ...base.nube, ...(g.nube ?? {}) },
+    nube: { ...baseNube, ...(g.nube ?? {}) },
     local: { ...base.local, ...(g.local ?? {}) },
   };
 }
@@ -41,7 +45,13 @@ export function ajustes() {
 export function guardarAjustes(nuevo, usuario) {
   const actual = leerDatos('apolin-ia', {});
   const nube = { ...(actual.nube ?? {}), ...nuevo.nube };
-  if (!nuevo.nube?.clave) nube.clave = actual.nube?.clave ?? undefined;
+  const anterior = ajustes().nube;
+  const cambiaServicio = nuevo.nube?.url && sinBarra(nuevo.nube.url) !== sinBarra(anterior.url);
+  if (!nuevo.nube?.clave) {
+    // La clave de un servicio no sirve para otro: al cambiar de proveedor hay que pegar la nueva
+    if (cambiaServicio && anterior.clave) throw badRequest('Pegue la clave del nuevo proveedor: la guardada es de otro servicio', [{ campo: 'nube.clave', mensaje: 'Pegue la clave del nuevo proveedor' }]);
+    nube.clave = actual.nube?.clave ?? undefined;
+  }
   if (nuevo.nube?.quitarClave) nube.clave = '';
   delete nube.quitarClave;
   guardarDatos('apolin-ia', { ...actual, ...nuevo, nube, local: { ...(actual.local ?? {}), ...nuevo.local }, actualizadoEn: new Date().toISOString(), actualizadoPor: usuario });
@@ -231,7 +241,13 @@ export async function estadoIa() {
         } else {
           const r = await fetch(`${c.url}/models`, { headers: { Authorization: `Bearer ${c.clave}` }, signal: AbortSignal.timeout(5000) });
           item.disponible = r.ok;
-          if (!r.ok) item.error = `HTTP ${r.status}`;
+          if (!r.ok) {
+            // El cuerpo dice el motivo real (clave inválida, país o red bloqueada, permisos...)
+            const cuerpo = await r.text().catch(() => '');
+            let motivo = cuerpo;
+            try { motivo = JSON.parse(cuerpo)?.error?.message ?? cuerpo; } catch { /* no es JSON */ }
+            item.error = `HTTP ${r.status}${motivo ? `: ${String(motivo).slice(0, 200)}` : ''}`;
+          }
         }
       } catch (err) {
         item.disponible = false;
