@@ -24,7 +24,7 @@ function desdeEnv() {
     orden: e.APOLIN_IA_ORDEN || 'nube,local',
     preguntasDia: Number(e.APOLIN_PREGUNTAS_DIA || 25),
     maxTokens: Number(e.APOLIN_MAX_TOKENS || 900),
-    nube: { nombre: e.APOLIN_NUBE_NOMBRE || 'nube', url: e.APOLIN_NUBE_URL || '', clave: e.APOLIN_NUBE_CLAVE || '', modelo: e.APOLIN_NUBE_MODELO || '', busqueda: e.APOLIN_NUBE_BUSQUEDA === 'true' },
+    nube: { nombre: e.APOLIN_NUBE_NOMBRE || 'nube', url: e.APOLIN_NUBE_URL || '', clave: e.APOLIN_NUBE_CLAVE || '', modelo: e.APOLIN_NUBE_MODELO || '', respaldo: e.APOLIN_NUBE_RESPALDO || '', busqueda: e.APOLIN_NUBE_BUSQUEDA === 'true' },
     local: { url: e.APOLIN_OLLAMA_URL || '', modelo: e.APOLIN_OLLAMA_MODELO || 'llama3.2' },
   };
 }
@@ -33,7 +33,7 @@ export function ajustes() {
   const g = leerDatos('apolin-ia', {});
   // Si en el panel se eligió otro servicio, la clave y el modelo del .env (de otro proveedor) no sirven
   const otroServicio = g.nube?.url && sinBarra(g.nube.url) !== sinBarra(base.nube.url);
-  const baseNube = otroServicio ? { ...base.nube, clave: '', modelo: '', busqueda: false } : base.nube;
+  const baseNube = otroServicio ? { ...base.nube, clave: '', modelo: '', respaldo: '', busqueda: false } : base.nube;
   return {
     ...base,
     ...Object.fromEntries(Object.entries(g).filter(([k, v]) => !['nube', 'local'].includes(k) && v !== undefined && v !== null)),
@@ -118,32 +118,84 @@ const limpiar = (t) => String(t ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')
 class SinCuota extends Error {}
 
 /*
- * Búsqueda en internet (APOLIN_NUBE_BUSQUEDA=true): herramienta "browser_search" de Groq, disponible en
- * openai/gpt-oss-20b y gpt-oss-120b. El modelo decide si busca (solo cuando la pregunta lo necesita).
+ * Búsqueda en internet (APOLIN_NUBE_BUSQUEDA=true). El modelo decide si busca (solo cuando la pregunta lo necesita).
+ *   Groq   → herramienta "browser_search" (openai/gpt-oss-20b y gpt-oss-120b).
+ *   Gemini → "Grounding with Google Search" por la API nativa (generateContent); 5.000 búsquedas al mes gratis.
  * Si el servicio no la acepta, se desactiva sola y se sigue sin búsqueda.
  */
+const esGemini = (url) => /generativelanguage\.googleapis\.com/i.test(url || '');
 let busquedaRechazada = false;
 const usarBusqueda = () => Boolean(ajustes().nube.busqueda) && !busquedaRechazada;
 /** Quita las marcas de cita que agrega la búsqueda (【1†L3-L5】) y deja el texto limpio. */
 const sinCitas = (t) => t.replace(/【[^】]*】/g, '').replace(/[ \t]+\n/g, '\n').trim();
 
+const pausa = (ms) => new Promise((r) => setTimeout(r, ms));
+const SATURADO = [500, 502, 503, 504];
+
+/** Modelos a intentar en orden: el principal y los de respaldo (separados por coma). */
+const modelosNube = (c) => [...new Set([c.modelo, ...String(c.respaldo || '').split(/[,\s]+/)].map((m) => m.trim()).filter(Boolean))];
+
+/**
+ * Pregunta a la nube. Si un modelo está saturado (5xx tras los reintentos) o no existe (404),
+ * pasa al siguiente modelo de respaldo del mismo servicio antes de rendirse.
+ */
 async function llamarNube(mensajes, { maxTokens, tiempo }) {
   const c = cfg.nube();
+  const lista = modelosNube(c);
+  const inicio = Date.now();
+  let ultimo;
+  for (const [i, modelo] of lista.entries()) {
+    const resta = tiempo - (Date.now() - inicio);
+    if (i > 0 && resta < 8000) break;
+    try {
+      const r = await llamarNubeModelo(mensajes, { maxTokens, tiempo: resta }, 0, modelo);
+      return i > 0 ? { ...r, modelo } : r;
+    } catch (err) {
+      ultimo = err;
+      if (!(err.saturado || err.status === 404) || i === lista.length - 1) throw err;
+      console.warn(`[apolin] ${c.nombre}/${modelo} no disponible (${err.status}); pruebo con ${lista[i + 1]}`);
+    }
+  }
+  throw ultimo;
+}
+
+async function llamarNubeModelo(mensajes, { maxTokens, tiempo }, intento, modelo) {
+  const c = cfg.nube();
+  const inicio = Date.now();
   const buscar = usarBusqueda();
-  const cuerpoPeticion = { model: c.modelo, messages: mensajes, max_tokens: maxTokens, temperature: 0.6 };
-  if (buscar) Object.assign(cuerpoPeticion, { tools: [{ type: 'browser_search' }], tool_choice: 'auto', reasoning_effort: 'low', max_tokens: Math.max(maxTokens, 2000) });
-  const res = await fetch(`${c.url}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${c.clave}` },
-    signal: AbortSignal.timeout(tiempo),
-    body: JSON.stringify(cuerpoPeticion),
-  });
+  const nativo = buscar && esGemini(c.url);
+  let res;
+  if (nativo) {
+    // API nativa de Gemini: la búsqueda de Google no está en la capa compatible con OpenAI
+    const base = c.url.replace(/\/openai\/?$/, '');
+    const contents = mensajes.filter((m) => m.role !== 'system').map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+    res = await fetch(`${base}/models/${encodeURIComponent(modelo)}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': c.clave },
+      signal: AbortSignal.timeout(tiempo),
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: mensajes.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n') }] },
+        contents,
+        tools: [{ google_search: {} }],
+        generationConfig: { maxOutputTokens: Math.max(maxTokens, 1500), temperature: 0.6 },
+      }),
+    });
+  } else {
+    const cuerpoPeticion = { model: modelo, messages: mensajes, max_tokens: maxTokens, temperature: 0.6 };
+    if (buscar) Object.assign(cuerpoPeticion, { tools: [{ type: 'browser_search' }], tool_choice: 'auto', reasoning_effort: 'low', max_tokens: Math.max(maxTokens, 2000) });
+    res = await fetch(`${c.url}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${c.clave}` },
+      signal: AbortSignal.timeout(tiempo),
+      body: JSON.stringify(cuerpoPeticion),
+    });
+  }
   if (buscar && res.status === 400) {
     const detalle = await res.text().catch(() => '');
-    if (/tool|browser_search|reasoning/i.test(detalle)) {
+    if (/tool|browser_search|google_search|grounding|search|reasoning/i.test(detalle)) {
       busquedaRechazada = true;
-      console.warn(`[apolin] el modelo ${c.modelo} no acepta búsqueda en internet; sigo sin ella. ${detalle.slice(0, 160)}`);
-      return llamarNube(mensajes, { maxTokens, tiempo });
+      console.warn(`[apolin] el modelo ${modelo} no acepta búsqueda en internet; sigo sin ella. ${detalle.slice(0, 160)}`);
+      return llamarNubeModelo(mensajes, { maxTokens, tiempo }, intento, modelo);
     }
     throw new Error(`HTTP 400 ${detalle.slice(0, 160)}`);
   }
@@ -151,15 +203,45 @@ async function llamarNube(mensajes, { maxTokens, tiempo }) {
     const espera = Number(res.headers.get('retry-after'));
     const cuerpo = await res.text().catch(() => '');
     const hablaDeCuota = /day|daily|quota|credit|exhaust|limit|diari|cuota|insufficient/i.test(cuerpo);
+    // Gemini avisa el límite por minuto con "PerMinute" y "retryDelay": "34s"; el diario con "PerDay"
+    const retraso = Number(cuerpo.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/)?.[1]);
+    const porMinuto = /PerMinute/i.test(cuerpo) && !/PerDay/i.test(cuerpo);
     // Un 403 que no habla de cuota es un rechazo (clave, país o permisos): se informa, no se bloquea hasta mañana
     if (res.status === 403 && !hablaDeCuota) throw new Error(`HTTP 403 ${cuerpo.slice(0, 200)}`);
     // Un 429 por minuto se espera unos segundos; si habla de cuota diaria o créditos, hasta mañana
-    const diario = res.status === 402 || /day|daily|quota|credit|exhaust|diari|cuota|insufficient/i.test(cuerpo) || espera > 300;
-    agotado.nube = diario ? mananaTemprano() : Date.now() + Math.max(15, espera || 30) * 1000;
+    const segundos = espera || retraso || 0;
+    const diario = !porMinuto && (res.status === 402 || /PerDay|day|daily|credit|exhaust|diari|insufficient/i.test(cuerpo) || segundos > 300);
+    agotado.nube = diario ? mananaTemprano() : Date.now() + Math.max(15, segundos || 30) * 1000;
     throw new SinCuota(`${res.status} ${cuerpo.slice(0, 200)}`);
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text().catch(() => '')).slice(0, 160)}`);
+  // Servicio saturado (503 "high demand") o caído un momento: hasta 2 reintentos si queda tiempo
+  if (SATURADO.includes(res.status) && intento < 2) {
+    const espera = 1500 * (intento + 1);
+    const resta = tiempo - (Date.now() - inicio) - espera;
+    if (resta > 5000) {
+      await res.body?.cancel().catch(() => {});
+      console.warn(`[apolin] ${c.nombre}/${modelo} respondió ${res.status}; reintento en ${espera / 1000} s`);
+      await pausa(espera);
+      return llamarNubeModelo(mensajes, { maxTokens, tiempo: resta }, intento + 1, modelo);
+    }
+  }
+  if (!res.ok) {
+    const err = new Error(`HTTP ${res.status} (${modelo}) ${(await res.text().catch(() => '')).slice(0, 160)}`);
+    err.status = res.status;
+    err.saturado = SATURADO.includes(res.status);
+    throw err;
+  }
   const data = await res.json();
+  if (nativo) {
+    const cand = data?.candidates?.[0];
+    const texto = (cand?.content?.parts ?? []).filter((x) => x.text && !x.thought).map((x) => x.text).join('').trim();
+    const g = cand?.groundingMetadata;
+    const busco = Boolean(g?.webSearchQueries?.length);
+    // Fuentes: los títulos que da Google suelen ser el dominio (accuweather.com, coinmarketcap.com…)
+    const sitios = [...new Set((g?.groundingChunks ?? []).map((ch) => ch.web?.title).filter(Boolean))].slice(0, 4);
+    const pie = busco && sitios.length ? `\n\n_Fuente: búsqueda en Google (${sitios.join(', ')})._` : '';
+    return { texto: limpiar(texto) + pie, tokens: data?.usageMetadata?.totalTokenCount, busco };
+  }
   return { texto: sinCitas(limpiar(data?.choices?.[0]?.message?.content)), tokens: data?.usage?.total_tokens, busco: Boolean(data?.choices?.[0]?.message?.executed_tools?.length) };
 }
 
@@ -198,10 +280,16 @@ export async function preguntarIa(sistema, historial, pregunta, { modo = 'genera
   for (const p of orden()) {
     if (agotado[p] && agotado[p] > Date.now()) { huboCuota = true; continue; }
     try {
-      const r = await LLAMAR[p](mensajes, opciones);
+      // Cada proveedor sabe con qué modelo está respondiendo (para que lo diga si se lo preguntan)
+      const c = cfg[p]();
+      const quien = p === 'nube' ? `${c.modelo} de ${c.nombre}, en la nube` : `${c.modelo} instalado en el servidor de la empresa (Ollama)`;
+      const conModelo = [{ role: 'system', content: `${sistema}\n- Si te preguntan qué modelo o inteligencia artificial usas, di que por dentro funcionas con ${quien}.` }, ...mensajes.slice(1)];
+      const r = await LLAMAR[p](conModelo, opciones);
       if (!r.texto) throw new Error('respuesta vacía');
       contar(p, r.tokens);
-      return { texto: r.texto.slice(0, 4000), proveedor: p };
+      const respondio = p === 'nube' ? `${c.nombre}/${r.modelo || c.modelo}` : `Ollama/${c.modelo}`;
+      console.log(`[apolin] respondió ${respondio} (${r.tokens ?? '?'} tokens)`);
+      return { texto: r.texto.slice(0, 4000), proveedor: p, respondio };
     } catch (err) {
       (uso.proveedores[p] ??= { preguntas: 0, tokens: 0, errores: 0 }).errores += 1;
       ultimoError[p] = { mensaje: (err.name === 'TimeoutError' ? 'tiempo de espera agotado' : err.message).slice(0, 240), fecha: new Date().toISOString() };
@@ -227,7 +315,7 @@ export async function estadoIa() {
   const proveedores = [];
   for (const p of ['nube', 'local']) {
     const c = cfg[p]();
-    const item = { id: p, nombre: c.nombre, configurado: configurado[p](), modelo: c.modelo || null, uso: uso.proveedores[p] ?? { preguntas: 0, tokens: 0, errores: 0 } };
+    const item = { id: p, nombre: c.nombre, configurado: configurado[p](), modelo: c.modelo || null, respaldo: p === 'nube' ? modelosNube(c).slice(1) : [], uso: uso.proveedores[p] ?? { preguntas: 0, tokens: 0, errores: 0 } };
     if (p === 'nube') item.busqueda = c.busqueda ? (busquedaRechazada ? 'rechazada' : 'activa') : 'apagada';
     if (ultimoError[p]) item.ultimoError = ultimoError[p];
     if (agotado[p] && agotado[p] > Date.now()) item.agotadoHasta = new Date(agotado[p]).toISOString();
@@ -327,7 +415,7 @@ export async function listarModelos(proveedor, prueba = {}) {
   const r = await fetch(`${url}/models`, { headers: { Authorization: `Bearer ${clave}` }, signal: AbortSignal.timeout(8000) });
   if (!r.ok) throw new Error(`El servicio respondió HTTP ${r.status}: ${(await r.text().catch(() => '')).slice(0, 160)}`);
   const data = await r.json();
-  return (data.data ?? data.models ?? []).map((m) => m.id ?? m.name).filter(Boolean).sort();
+  return (data.data ?? data.models ?? []).map((m) => String(m.id ?? m.name ?? '').replace(/^models\//, '')).filter(Boolean).sort();
 }
 
 /** Pregunta de prueba a un proveedor concreto, sin gastar cupo de nadie. */
@@ -340,7 +428,7 @@ export async function probar(proveedor) {
       { maxTokens: 300, tiempo: 60_000 },
     );
     delete ultimoError[proveedor];
-    return { ok: true, texto: r.texto, ms: Date.now() - inicio, busco: r.busco ?? false };
+    return { ok: true, texto: r.modelo ? `[respondió el respaldo ${r.modelo}] ${r.texto}` : r.texto, ms: Date.now() - inicio, busco: r.busco ?? false };
   } catch (err) {
     const mensaje = err.name === 'TimeoutError' ? 'tiempo de espera agotado' : err.message;
     ultimoError[proveedor] = { mensaje: mensaje.slice(0, 240), fecha: new Date().toISOString() };

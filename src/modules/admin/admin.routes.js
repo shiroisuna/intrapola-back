@@ -223,6 +223,7 @@ router.put('/apolin/ia', validate(z.object({
     nombre: z.string().trim().max(40).default('nube'),
     url: urlOVacio,
     modelo: z.string().trim().max(150),
+    respaldo: z.string().trim().max(400).optional().default(''),
     clave: z.string().trim().max(400).optional().default(''),
     quitarClave: z.boolean().optional().default(false),
     busqueda: z.boolean(),

@@ -333,7 +333,8 @@ async function pasoConversar(c, texto, ip) {
   c.historialIa = [...c.historialIa, { role: 'user', content: texto }, { role: 'assistant', content: r.texto }].slice(-6);
   const partes = [r.texto];
   if (r.cupo.quedan <= 3) partes.push(r.cupo.quedan ? `_Te quedan ${r.cupo.quedan} preguntas generales hoy._` : '_Esa fue tu última pregunta general de hoy._');
-  return responder(c, partes, { opciones, sugerencia: 'Escribe otra pregunta', cara: CARAS.normal });
+  // "respondio" solo sirve para revisar en la pestaña Network qué modelo contestó (no se muestra en el chat)
+  return { ...responder(c, partes, { opciones, sugerencia: 'Escribe otra pregunta', cara: CARAS.normal }), respondio: r.respondio };
 }
 
 /* ------------------------------------ entrada ------------------------------------ */
